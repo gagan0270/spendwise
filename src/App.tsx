@@ -6,6 +6,7 @@ import {
   ArrowUpRight,
   Bot,
   CalendarDays,
+  CheckCircle2,
   ChevronRight,
   CircleDollarSign,
   Download,
@@ -24,12 +25,13 @@ import {
   TrendingUp,
   User,
   WalletCards,
+  X,
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { getCurrentUser, signOutUser, type UserProfile } from '@/lib/auth';
 import { populateSampleDataForUser, resetUserDataToZero } from '@/lib/demoData';
 import { exportTransactionsToCsv } from '@/lib/exportCsv';
-import type { Budget, NewBudget, NewSavingsGoal, NewTransaction, SavingsGoal, Transaction } from '@/lib/types';
+import type { Budget, NewBudget, NewSavingsGoal, NewTransaction, SavingsGoal, Transaction, UserMonthlyBudget } from '@/lib/types';
 import { currentMonthKey, formatCurrency, formatMonth } from '@/lib/format';
 import { categoryTotals, generateInsights, summarize, weeklyTrend } from '@/lib/insights';
 import { calculateHealthScore } from '@/lib/health';
@@ -43,7 +45,9 @@ import { GoalModal } from '@/components/GoalModal';
 import { HealthGauge } from '@/components/HealthGauge';
 import { InsightCard } from '@/components/InsightCard';
 import { LoginPage } from '@/components/LoginPage';
+import { MonthlyBudgetCard } from '@/components/MonthlyBudgetCard';
 import { QuickExpenseBar } from '@/components/QuickExpenseBar';
+import { SetMonthlyBudgetModal } from '@/components/SetMonthlyBudgetModal';
 import { SpendingHeatmap } from '@/components/SpendingHeatmap';
 import { TransactionForm } from '@/components/TransactionForm';
 import { TransactionList } from '@/components/TransactionList';
@@ -64,13 +68,36 @@ function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
+  const [monthlyBudget, setMonthlyBudget] = useState<UserMonthlyBudget | null>(null);
+
   const [view, setView] = useState<View>('overview');
   const [loading, setLoading] = useState(true);
   const [seedingLoading, setSeedingLoading] = useState(false);
+  const [rolloverLoading, setRolloverLoading] = useState(false);
+  const [rolloverMessage, setRolloverMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
   const [showExpense, setShowExpense] = useState(false);
   const [showBudget, setShowBudget] = useState(false);
+  const [showSetBudgetModal, setShowSetBudgetModal] = useState(false);
+  const [hasPromptedBudget, setHasPromptedBudget] = useState(false);
   const [editingGoal, setEditingGoal] = useState<SavingsGoal | null | undefined>(undefined);
+
+  // Auto-prompt to set monthly budget if not yet configured
+  useEffect(() => {
+    if (!loading && user && monthlyBudget === null && !hasPromptedBudget) {
+      setShowSetBudgetModal(true);
+      setHasPromptedBudget(true);
+    }
+  }, [loading, user, monthlyBudget, hasPromptedBudget]);
+
+  const handleOpenExpenseModal = () => {
+    if (!monthlyBudget) {
+      setShowSetBudgetModal(true);
+      return;
+    }
+    setShowExpense(true);
+  };
 
   // Filter & Search states
   const [categoryFilter, setCategoryFilter] = useState('All');
@@ -111,11 +138,12 @@ function App() {
     setLoading(true);
     setError(null);
     try {
-      // Always query only data that belongs to the current user
-      const [tx, bud, goal] = await Promise.all([
+      // Query transactions, budgets, goals, and monthly allowance for current user
+      const [tx, bud, goal, mb] = await Promise.all([
         supabase.from('transactions').select('*').eq('user_id', user.id).order('spent_at', { ascending: false }),
         supabase.from('budgets').select('*').eq('user_id', user.id),
         supabase.from('savings_goals').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+        supabase.from('user_monthly_budgets').select('*').eq('user_id', user.id).eq('month_key', monthKey).maybeSingle(),
       ]);
       if (tx.error) throw tx.error;
       if (bud.error) throw bud.error;
@@ -124,12 +152,13 @@ function App() {
       setTransactions((tx.data as Transaction[]) ?? []);
       setBudgets((bud.data as Budget[]) ?? []);
       setGoals((goal.data as SavingsGoal[]) ?? []);
+      setMonthlyBudget((mb.data as UserMonthlyBudget) ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load your money data.');
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, monthKey]);
 
   useEffect(() => {
     if (user) {
@@ -139,7 +168,6 @@ function App() {
 
   const handleLoginSuccess = async (loggedUser: UserProfile) => {
     setUser(loggedUser);
-    // Starts with ZERO by default
   };
 
   const handleSignOut = async () => {
@@ -148,6 +176,7 @@ function App() {
     setTransactions([]);
     setBudgets([]);
     setGoals([]);
+    setMonthlyBudget(null);
     setView('overview');
   };
 
@@ -169,6 +198,10 @@ function App() {
     setSeedingLoading(true);
     try {
       await resetUserDataToZero(user.id);
+      setTransactions([]);
+      setBudgets([]);
+      setGoals([]);
+      setMonthlyBudget(null);
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not reset data to zero.');
@@ -176,6 +209,41 @@ function App() {
       setSeedingLoading(false);
     }
   };
+
+  const deleteMonthlyMasterBudget = useCallback(async () => {
+    if (!user || !monthlyBudget) return;
+    const { error: delErr } = await supabase
+      .from('user_monthly_budgets')
+      .delete()
+      .eq('id', monthlyBudget.id)
+      .eq('user_id', user.id);
+    if (delErr) throw delErr;
+    setMonthlyBudget(null);
+  }, [user, monthlyBudget]);
+
+  const saveMonthlyMasterBudget = useCallback(
+    async (amount: number, targetGoalId: string | null) => {
+      if (!user) return;
+      const { data, error: saveErr } = await supabase
+        .from('user_monthly_budgets')
+        .upsert(
+          {
+            user_id: user.id,
+            month_key: monthKey,
+            total_budget: amount,
+            target_goal_id: targetGoalId,
+            rollover_completed: false,
+          },
+          { onConflict: 'user_id,month_key' }
+        )
+        .select()
+        .maybeSingle();
+
+      if (saveErr || !data) throw saveErr ?? new Error('Could not save monthly budget.');
+      setMonthlyBudget(data as UserMonthlyBudget);
+    },
+    [user, monthKey]
+  );
 
   const addTransaction = useCallback(
     async (entry: NewTransaction) => {
@@ -271,6 +339,66 @@ function App() {
     [user]
   );
 
+  const summary = useMemo(() => summarize(transactions, monthKey), [transactions, monthKey]);
+  const insights = useMemo(() => generateInsights(transactions, budgets, summary, monthKey), [transactions, budgets, summary, monthKey]);
+  const score = useMemo(() => calculateHealthScore(summary, budgets, goals), [summary, budgets, goals]);
+  const trend = useMemo(() => weeklyTrend(transactions, 6), [transactions]);
+  const donutData = useMemo(
+    () => categoryTotals(transactions, monthKey).map((item) => ({ label: getCategory(item.category).label, value: item.total, color: item.color })),
+    [transactions, monthKey]
+  );
+  const totalBudget = budgets.reduce((sum, budget) => sum + budget.monthly_limit, 0);
+  const totalSaved = goals.reduce((sum, goal) => sum + goal.saved_amount, 0);
+
+  const change = useMemo(() => {
+    const date = new Date();
+    const previous = new Date(date.getFullYear(), date.getMonth() - 1, 1);
+    const key = `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`;
+    const last = transactions.filter((item) => item.spent_at.startsWith(key)).reduce((sum, item) => sum + item.amount, 0);
+    return last ? Math.round(((summary.total - last) / last) * 100) : null;
+  }, [transactions, summary.total]);
+
+  // Rollover remaining unspent budget into target savings goal
+  const rolloverSavingsToGoal = useCallback(async () => {
+    if (!user || !monthlyBudget || !monthlyBudget.target_goal_id) return;
+    const surplus = Math.max(0, monthlyBudget.total_budget - summary.total);
+    if (surplus <= 0) return;
+
+    setRolloverLoading(true);
+    try {
+      const targetGoal = goals.find((g) => g.id === monthlyBudget.target_goal_id);
+      if (!targetGoal) throw new Error('Target savings goal not found.');
+
+      const newSavedAmount = targetGoal.saved_amount + surplus;
+
+      // Update goal in Supabase
+      const { error: goalErr } = await supabase
+        .from('savings_goals')
+        .update({ saved_amount: newSavedAmount })
+        .eq('id', targetGoal.id)
+        .eq('user_id', user.id);
+      if (goalErr) throw goalErr;
+
+      // Update monthly budget rollover_completed in Supabase
+      const { error: mbErr } = await supabase
+        .from('user_monthly_budgets')
+        .update({ rollover_completed: true })
+        .eq('id', monthlyBudget.id)
+        .eq('user_id', user.id);
+      if (mbErr) throw mbErr;
+
+      // Update local state
+      setGoals((prev) => prev.map((g) => (g.id === targetGoal.id ? { ...g, saved_amount: newSavedAmount } : g)));
+      setMonthlyBudget((prev) => (prev ? { ...prev, rollover_completed: true } : null));
+      setRolloverMessage(`🎉 Awesome! ${formatCurrency(surplus)} saved this month has been added to your "${targetGoal.name}" goal!`);
+      setTimeout(() => setRolloverMessage(null), 6000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not transfer savings to goal.');
+    } finally {
+      setRolloverLoading(false);
+    }
+  }, [user, monthlyBudget, summary.total, goals]);
+
   // Filtered & Sorted Transactions
   const filteredTransactions = useMemo(() => {
     return transactions
@@ -290,25 +418,6 @@ function App() {
         return 0;
       });
   }, [transactions, categoryFilter, searchQuery, sortBy]);
-
-  const summary = useMemo(() => summarize(transactions, monthKey), [transactions, monthKey]);
-  const insights = useMemo(() => generateInsights(transactions, budgets, summary, monthKey), [transactions, budgets, summary, monthKey]);
-  const score = useMemo(() => calculateHealthScore(summary, budgets, goals), [summary, budgets, goals]);
-  const trend = useMemo(() => weeklyTrend(transactions, 6), [transactions]);
-  const donutData = useMemo(
-    () => categoryTotals(transactions, monthKey).map((item) => ({ label: getCategory(item.category).label, value: item.total, color: item.color })),
-    [transactions, monthKey]
-  );
-  const totalBudget = budgets.reduce((sum, budget) => sum + budget.monthly_limit, 0);
-  const totalSaved = goals.reduce((sum, goal) => sum + goal.saved_amount, 0);
-
-  const change = useMemo(() => {
-    const date = new Date();
-    const previous = new Date(date.getFullYear(), date.getMonth() - 1, 1);
-    const key = `${previous.getFullYear()}-${String(previous.getMonth() + 1).padStart(2, '0')}`;
-    const last = transactions.filter((item) => item.spent_at.startsWith(key)).reduce((sum, item) => sum + item.amount, 0);
-    return last ? Math.round(((summary.total - last) / last) * 100) : null;
-  }, [transactions, summary.total]);
 
   // If checking authentication
   if (authChecking) {
@@ -430,13 +539,20 @@ function App() {
 
             <div className="flex items-center gap-2">
               <button
+                onClick={() => setShowSetBudgetModal(true)}
+                className="flex items-center gap-1.5 rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-xs font-bold text-cyan-300 transition-colors hover:bg-cyan-400/20"
+              >
+                <CircleDollarSign size={14} />
+                <span>{monthlyBudget ? 'Monthly budget' : 'Set budget'}</span>
+              </button>
+              <button
                 onClick={() => setShowBudget(true)}
                 className="hidden items-center gap-2 rounded-xl border border-slate-700 px-3 py-2 text-xs font-bold text-slate-300 transition-colors hover:border-cyan-400 hover:text-cyan-300 sm:flex"
               >
-                <Settings2 size={14} /> Budget rules
+                <Settings2 size={14} /> Category rules
               </button>
               <button
-                onClick={() => setShowExpense(true)}
+                onClick={handleOpenExpenseModal}
                 className="flex items-center gap-2 rounded-xl bg-cyan-300 px-4 py-2.5 text-xs font-extrabold text-slate-950 transition-all hover:bg-cyan-200 hover:shadow-lg hover:shadow-cyan-300/10"
               >
                 <Plus size={15} /> Log expense
@@ -460,8 +576,35 @@ function App() {
             </div>
           )}
 
+          {rolloverMessage && (
+            <div className="mb-6 flex items-center justify-between rounded-2xl border border-lime-400/30 bg-lime-400/10 p-4 text-lime-200 animate-fade-in">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 size={18} className="text-lime-300" />
+                <p className="text-sm font-semibold">{rolloverMessage}</p>
+              </div>
+              <button onClick={() => setRolloverMessage(null)} className="text-lime-400 hover:text-lime-200">
+                <X size={16} />
+              </button>
+            </div>
+          )}
+
           {/* AI Quick Expense Bar */}
-          <QuickExpenseBar onAddTransaction={addTransaction} />
+          <QuickExpenseBar
+            onAddTransaction={addTransaction}
+            hasMonthlyBudget={Boolean(monthlyBudget)}
+            onRequireBudget={() => setShowSetBudgetModal(true)}
+          />
+
+          {/* Master Monthly Budget & Remaining Balance Deduction Card */}
+          <MonthlyBudgetCard
+            monthlyBudget={monthlyBudget}
+            totalSpent={summary.total}
+            monthKey={monthKey}
+            goals={goals}
+            onOpenSetModal={() => setShowSetBudgetModal(true)}
+            onRolloverSavings={rolloverSavingsToGoal}
+            rolloverLoading={rolloverLoading}
+          />
 
           {loading ? (
             <div className="flex min-h-[50vh] flex-col items-center justify-center text-slate-500">
@@ -479,11 +622,13 @@ function App() {
                   donutData={donutData}
                   transactions={transactions}
                   budgets={budgets}
+                  monthlyBudget={monthlyBudget}
                   totalBudget={totalBudget}
                   monthKey={monthKey}
                   onSeeInsights={() => setView('insights')}
                   onSeeHistory={() => setView('history')}
                   onEditBudget={() => setShowBudget(true)}
+                  onOpenSetBudget={() => setShowSetBudgetModal(true)}
                   onDelete={deleteTransaction}
                   onPopulateSample={handlePopulateSample}
                   onResetToZero={handleResetToZero}
@@ -594,7 +739,7 @@ function App() {
                           <Download size={15} /> Export CSV
                         </button>
                         <button
-                          onClick={() => setShowExpense(true)}
+                          onClick={handleOpenExpenseModal}
                           className="flex items-center gap-1.5 rounded-xl bg-cyan-300 px-3.5 py-2.5 text-xs font-extrabold text-slate-950 hover:bg-cyan-200 transition-all"
                         >
                           <Plus size={15} /> Add expense
@@ -694,6 +839,17 @@ function App() {
       {/* Modals */}
       {showExpense && <TransactionForm onSubmit={addTransaction} onClose={() => setShowExpense(false)} />}
       {showBudget && <BudgetModal budgets={budgets} onSave={saveBudget} onDelete={deleteBudget} onClose={() => setShowBudget(false)} />}
+      {showSetBudgetModal && (
+        <SetMonthlyBudgetModal
+          key={monthlyBudget ? `${monthlyBudget.id}-${monthlyBudget.total_budget}` : 'new-budget'}
+          currentBudget={monthlyBudget}
+          goals={goals}
+          monthKey={monthKey}
+          onSave={saveMonthlyMasterBudget}
+          onDelete={deleteMonthlyMasterBudget}
+          onClose={() => setShowSetBudgetModal(false)}
+        />
+      )}
       {editingGoal !== undefined && <GoalModal goal={editingGoal} onSave={saveGoal} onClose={() => setEditingGoal(undefined)} />}
     </div>
   );
@@ -747,11 +903,13 @@ function Overview({
   donutData,
   transactions,
   budgets,
+  monthlyBudget,
   totalBudget,
   monthKey,
   onSeeInsights,
   onSeeHistory,
   onEditBudget,
+  onOpenSetBudget,
   onDelete,
   onPopulateSample,
   onResetToZero,
@@ -764,11 +922,13 @@ function Overview({
   donutData: { label: string; value: number; color: string }[];
   transactions: Transaction[];
   budgets: Budget[];
+  monthlyBudget: UserMonthlyBudget | null;
   totalBudget: number;
   monthKey: string;
   onSeeInsights: () => void;
   onSeeHistory: () => void;
   onEditBudget: () => void;
+  onOpenSetBudget: () => void;
   onDelete: (id: string) => Promise<void>;
   onPopulateSample: () => Promise<void>;
   onResetToZero: () => Promise<void>;
@@ -875,7 +1035,7 @@ function Overview({
           <div className="mb-4 flex items-center justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Guardrails</p>
-              <h3 className="mt-1 text-sm font-bold text-white">Budget tracking</h3>
+              <h3 className="mt-1 text-sm font-bold text-white">Category limits</h3>
             </div>
             <button onClick={onEditBudget} className="text-xs font-bold text-cyan-300 hover:text-cyan-200">
               {budgets.length} rules
@@ -919,7 +1079,16 @@ function Overview({
             <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
               Your account starts completely clean with zero expenses. Use the AI Quick Log bar above (e.g. "Canteen lunch 120") to record your first spend.
             </p>
-            <div className="mt-4 flex items-center justify-center gap-3">
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+              {!monthlyBudget && (
+                <button
+                  onClick={onOpenSetBudget}
+                  className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-cyan-300 to-lime-300 px-4 py-2 text-xs font-extrabold text-slate-950 shadow-md hover:opacity-95 transition-all"
+                >
+                  <CircleDollarSign size={14} />
+                  Set Monthly Budget
+                </button>
+              )}
               <button
                 onClick={onPopulateSample}
                 disabled={seedingLoading}

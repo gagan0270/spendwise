@@ -1,14 +1,16 @@
 import { useState, type FormEvent } from 'react';
-import { Bot, Check, CornerDownLeft, Loader2, Sparkles } from 'lucide-react';
+import { Bot, Check, CornerDownLeft, Loader2, Lock, Sparkles } from 'lucide-react';
 import { parseNaturalLanguageExpense } from '@/lib/nlpParser';
 import type { NewTransaction } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
 
 interface QuickExpenseBarProps {
   onAddTransaction: (entry: NewTransaction) => Promise<void>;
+  hasMonthlyBudget: boolean;
+  onRequireBudget: () => void;
 }
 
-export function QuickExpenseBar({ onAddTransaction }: QuickExpenseBarProps) {
+export function QuickExpenseBar({ onAddTransaction, hasMonthlyBudget, onRequireBudget }: QuickExpenseBarProps) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [lastAdded, setLastAdded] = useState<string | null>(null);
@@ -16,6 +18,12 @@ export function QuickExpenseBar({ onAddTransaction }: QuickExpenseBarProps) {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+
+    if (!hasMonthlyBudget) {
+      onRequireBudget();
+      return;
+    }
+
     if (!text.trim()) return;
 
     const parsed = parseNaturalLanguageExpense(text);
@@ -38,23 +46,41 @@ export function QuickExpenseBar({ onAddTransaction }: QuickExpenseBarProps) {
     }
   };
 
+  const handleInputFocus = () => {
+    if (!hasMonthlyBudget) {
+      onRequireBudget();
+    }
+  };
+
   return (
     <div className="relative mb-6 rounded-2xl border border-cyan-400/25 bg-gradient-to-r from-cyan-950/40 via-slate-900 to-[#0b1a2c] p-3 sm:p-4 shadow-lg backdrop-blur-xl">
       <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row items-center gap-3">
         <div className="flex items-center gap-2 text-cyan-300 pl-1 shrink-0">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-300">
-            <Bot size={16} />
+            {hasMonthlyBudget ? <Bot size={16} /> : <Lock size={15} className="text-amber-400" />}
           </div>
-          <span className="text-xs font-bold uppercase tracking-wider hidden md:inline">AI Quick Log:</span>
+          <span className="text-xs font-bold uppercase tracking-wider hidden md:inline">
+            {hasMonthlyBudget ? 'AI Quick Log:' : 'Step 1:'}
+          </span>
         </div>
 
-        <div className="relative flex-1 w-full">
+        <div className="relative flex-1 w-full" onClick={() => !hasMonthlyBudget && onRequireBudget()}>
           <input
             type="text"
             value={text}
+            readOnly={!hasMonthlyBudget}
+            onFocus={handleInputFocus}
             onChange={(e) => { setText(e.target.value); setError(null); }}
-            placeholder='Try typing: "Campus coffee 120" or "Metro card recharge 200" or "Hostel rent 8000"'
-            className="w-full rounded-xl border border-slate-700/80 bg-slate-950/70 px-4 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/30 transition-all pr-10"
+            placeholder={
+              hasMonthlyBudget
+                ? 'Try typing: "Campus coffee 120" or "Metro card recharge 200" or "Hostel rent 8000"'
+                : '🔒 Click here to set your monthly budget first...'
+            }
+            className={`w-full rounded-xl border px-4 py-2.5 text-xs sm:text-sm text-white outline-none transition-all pr-10 ${
+              hasMonthlyBudget
+                ? 'border-slate-700/80 bg-slate-950/70 placeholder-slate-500 focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/30 cursor-text'
+                : 'border-amber-400/30 bg-amber-950/20 placeholder-amber-200/60 cursor-pointer hover:border-amber-400/50'
+            }`}
           />
           <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hidden sm:block">
             <CornerDownLeft size={14} />
@@ -63,11 +89,26 @@ export function QuickExpenseBar({ onAddTransaction }: QuickExpenseBarProps) {
 
         <button
           type="submit"
-          disabled={submitting || !text.trim()}
-          className="w-full sm:w-auto flex items-center justify-center gap-1.5 rounded-xl bg-cyan-300 px-4 py-2.5 text-xs font-extrabold text-slate-950 transition-all hover:bg-cyan-200 active:scale-95 disabled:opacity-40 disabled:pointer-events-none shadow-md shadow-cyan-300/10 shrink-0"
+          disabled={submitting}
+          className={`w-full sm:w-auto flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-extrabold transition-all active:scale-95 shadow-md shrink-0 ${
+            hasMonthlyBudget
+              ? 'bg-cyan-300 text-slate-950 hover:bg-cyan-200 shadow-cyan-300/10'
+              : 'bg-amber-300 text-slate-950 hover:bg-amber-200 shadow-amber-300/10'
+          }`}
         >
-          {submitting ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-          <span>Quick Log</span>
+          {submitting ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : hasMonthlyBudget ? (
+            <>
+              <Sparkles size={14} />
+              <span>Quick Log</span>
+            </>
+          ) : (
+            <>
+              <Lock size={14} />
+              <span>Set Budget First</span>
+            </>
+          )}
         </button>
       </form>
 

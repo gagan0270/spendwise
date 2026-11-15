@@ -49,3 +49,19 @@ export type NewSavingsGoal = {
   saved_amount: number;
   target_date?: string | null;
 };
+
+export interface UserMonthlyBudget {
+  id: string;
+  user_id: string;
+  month_key: string;
+  total_budget: number;
+  target_goal_id: string | null;
+  rollover_completed: boolean;
+  created_at: string;
+}
+
+export type NewUserMonthlyBudget = {
+  month_key: string;
+  total_budget: number;
+  target_goal_id?: string | null;
+};

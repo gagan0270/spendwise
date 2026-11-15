@@ -89,5 +89,6 @@ export async function resetUserDataToZero(userId: string): Promise<void> {
     supabase.from('transactions').delete().eq('user_id', userId),
     supabase.from('budgets').delete().eq('user_id', userId),
     supabase.from('savings_goals').delete().eq('user_id', userId),
+    supabase.from('user_monthly_budgets').delete().eq('user_id', userId),
   ]);
 }
