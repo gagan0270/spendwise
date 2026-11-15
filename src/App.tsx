@@ -19,6 +19,7 @@ import {
   Settings2,
   Sparkles,
   Target,
+  Trash2,
   TrendingDown,
   TrendingUp,
   User,
@@ -26,7 +27,7 @@ import {
 } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 import { getCurrentUser, signOutUser, type UserProfile } from '@/lib/auth';
-import { forceReseedDemoData, seedDemoDataIfEmpty } from '@/lib/demoData';
+import { populateSampleDataForUser, resetUserDataToZero } from '@/lib/demoData';
 import { exportTransactionsToCsv } from '@/lib/exportCsv';
 import type { Budget, NewBudget, NewSavingsGoal, NewTransaction, SavingsGoal, Transaction } from '@/lib/types';
 import { currentMonthKey, formatCurrency, formatMonth } from '@/lib/format';
@@ -65,7 +66,7 @@ function App() {
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
   const [view, setView] = useState<View>('overview');
   const [loading, setLoading] = useState(true);
-  const [reseeding, setReseeding] = useState(false);
+  const [seedingLoading, setSeedingLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showExpense, setShowExpense] = useState(false);
   const [showBudget, setShowBudget] = useState(false);
@@ -103,13 +104,18 @@ function App() {
       setLoading(false);
       return;
     }
+    if (!user) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
+      // Always query only data that belongs to the current user
       const [tx, bud, goal] = await Promise.all([
-        supabase.from('transactions').select('*').order('spent_at', { ascending: false }),
-        supabase.from('budgets').select('*'),
-        supabase.from('savings_goals').select('*').order('created_at', { ascending: false }),
+        supabase.from('transactions').select('*').eq('user_id', user.id).order('spent_at', { ascending: false }),
+        supabase.from('budgets').select('*').eq('user_id', user.id),
+        supabase.from('savings_goals').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
       ]);
       if (tx.error) throw tx.error;
       if (bud.error) throw bud.error;
@@ -123,7 +129,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (user) {
@@ -133,10 +139,7 @@ function App() {
 
   const handleLoginSuccess = async (loggedUser: UserProfile) => {
     setUser(loggedUser);
-    if (loggedUser.isDemo) {
-      await seedDemoDataIfEmpty();
-    }
-    await loadData();
+    // Starts with ZERO by default
   };
 
   const handleSignOut = async () => {
@@ -148,65 +151,125 @@ function App() {
     setView('overview');
   };
 
-  const handleReseed = async () => {
-    setReseeding(true);
+  const handlePopulateSample = async () => {
+    if (!user) return;
+    setSeedingLoading(true);
     try {
-      await forceReseedDemoData();
+      await populateSampleDataForUser(user.id);
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not re-seed demo data.');
+      setError(err instanceof Error ? err.message : 'Could not load sample data.');
     } finally {
-      setReseeding(false);
+      setSeedingLoading(false);
     }
   };
 
-  const addTransaction = useCallback(async (entry: NewTransaction) => {
-    const { data, error: insertError } = await supabase.from('transactions').insert(entry).select().maybeSingle();
-    if (insertError || !data) throw insertError ?? new Error('Could not save expense.');
-    setTransactions((current) => [data as Transaction, ...current]);
-  }, []);
-
-  const deleteTransaction = useCallback(async (id: string) => {
-    const previous = transactions;
-    setTransactions((current) => current.filter((item) => item.id !== id));
-    const { error: deleteError } = await supabase.from('transactions').delete().eq('id', id);
-    if (deleteError) {
-      setTransactions(previous);
-      throw deleteError;
+  const handleResetToZero = async () => {
+    if (!user) return;
+    setSeedingLoading(true);
+    try {
+      await resetUserDataToZero(user.id);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reset data to zero.');
+    } finally {
+      setSeedingLoading(false);
     }
-  }, [transactions]);
+  };
 
-  const saveBudget = useCallback(async (budget: NewBudget) => {
-    const { data, error: saveError } = await supabase.from('budgets').upsert(budget, { onConflict: 'category' }).select().maybeSingle();
-    if (saveError || !data) throw saveError ?? new Error('Could not save budget.');
-    setBudgets((current) => {
-      const index = current.findIndex((item) => item.category === budget.category);
-      if (index < 0) return [...current, data as Budget];
-      const next = [...current];
-      next[index] = data as Budget;
-      return next;
-    });
-  }, []);
+  const addTransaction = useCallback(
+    async (entry: NewTransaction) => {
+      if (!user) return;
+      const { data, error: insertError } = await supabase
+        .from('transactions')
+        .insert({ ...entry, user_id: user.id })
+        .select()
+        .maybeSingle();
+      if (insertError || !data) throw insertError ?? new Error('Could not save expense.');
+      setTransactions((current) => [data as Transaction, ...current]);
+    },
+    [user]
+  );
 
-  const deleteBudget = useCallback(async (category: string) => {
-    await supabase.from('budgets').delete().eq('category', category);
-    setBudgets((current) => current.filter((item) => item.category !== category));
-  }, []);
+  const deleteTransaction = useCallback(
+    async (id: string) => {
+      if (!user) return;
+      const previous = transactions;
+      setTransactions((current) => current.filter((item) => item.id !== id));
+      const { error: deleteError } = await supabase
+        .from('transactions')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user.id);
+      if (deleteError) {
+        setTransactions(previous);
+        throw deleteError;
+      }
+    },
+    [transactions, user]
+  );
 
-  const saveGoal = useCallback(async (goal: NewSavingsGoal, id?: string) => {
-    const result = id
-      ? await supabase.from('savings_goals').update(goal).eq('id', id).select().maybeSingle()
-      : await supabase.from('savings_goals').insert(goal).select().maybeSingle();
-    if (result.error || !result.data) throw result.error ?? new Error('Could not save goal.');
-    setGoals((current) =>
-      id ? current.map((item) => (item.id === id ? (result.data as SavingsGoal) : item)) : [result.data as SavingsGoal, ...current]
-    );
-  }, []);
+  const saveBudget = useCallback(
+    async (budget: NewBudget) => {
+      if (!user) return;
+      const { data, error: saveError } = await supabase
+        .from('budgets')
+        .upsert({ ...budget, user_id: user.id }, { onConflict: 'user_id,category' })
+        .select()
+        .maybeSingle();
+      if (saveError || !data) throw saveError ?? new Error('Could not save budget.');
+      setBudgets((current) => {
+        const index = current.findIndex((item) => item.category === budget.category);
+        if (index < 0) return [...current, data as Budget];
+        const next = [...current];
+        next[index] = data as Budget;
+        return next;
+      });
+    },
+    [user]
+  );
 
-  const deleteGoal = useCallback(async (id: string) => {
-    await supabase.from('savings_goals').delete().eq('id', id);
-    setGoals((current) => current.filter((item) => item.id !== id));
-  }, []);
+  const deleteBudget = useCallback(
+    async (category: string) => {
+      if (!user) return;
+      await supabase.from('budgets').delete().eq('user_id', user.id).eq('category', category);
+      setBudgets((current) => current.filter((item) => item.category !== category));
+    },
+    [user]
+  );
+
+  const saveGoal = useCallback(
+    async (goal: NewSavingsGoal, id?: string) => {
+      if (!user) return;
+      const result = id
+        ? await supabase
+            .from('savings_goals')
+            .update(goal)
+            .eq('id', id)
+            .eq('user_id', user.id)
+            .select()
+            .maybeSingle()
+        : await supabase
+            .from('savings_goals')
+            .insert({ ...goal, user_id: user.id })
+            .select()
+            .maybeSingle();
+      if (result.error || !result.data) throw result.error ?? new Error('Could not save goal.');
+      setGoals((current) =>
+        id ? current.map((item) => (item.id === id ? (result.data as SavingsGoal) : item)) : [result.data as SavingsGoal, ...current]
+      );
+    },
+    [user]
+  );
+
+  const deleteGoal = useCallback(
+    async (id: string) => {
+      if (!user) return;
+      await supabase.from('savings_goals').delete().eq('id', id).eq('user_id', user.id);
+      setGoals((current) => current.filter((item) => item.id !== id));
+    },
+    [user]
+  );
 
   // Filtered & Sorted Transactions
   const filteredTransactions = useMemo(() => {
@@ -299,18 +362,27 @@ function App() {
           </div>
         </div>
 
-        {/* User Card & Sign Out at bottom of sidebar */}
+        {/* User Card, Sample Data Actions & Sign Out */}
         <div className="space-y-3">
-          {user.isDemo && (
+          <div className="flex gap-2">
             <button
-              onClick={handleReseed}
-              disabled={reseeding}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 text-xs font-bold text-cyan-300 hover:bg-cyan-400/20 transition-all"
+              onClick={handlePopulateSample}
+              disabled={seedingLoading}
+              title="Populate realistic demo transactions to test charts"
+              className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-2 text-[11px] font-bold text-cyan-300 hover:bg-cyan-400/20 transition-all disabled:opacity-50"
             >
-              <RefreshCw size={13} className={reseeding ? 'animate-spin' : ''} />
-              {reseeding ? 'Resetting Data…' : 'Reset Demo Data'}
+              <RefreshCw size={12} className={seedingLoading ? 'animate-spin' : ''} />
+              <span>Sample Data</span>
             </button>
-          )}
+            <button
+              onClick={handleResetToZero}
+              disabled={seedingLoading}
+              title="Clear all data and reset to zero"
+              className="flex items-center justify-center rounded-xl border border-slate-700 bg-slate-800/60 p-2 text-slate-400 hover:text-rose-400 hover:border-rose-400/30 transition-all disabled:opacity-50"
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-3.5 flex items-center justify-between">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -319,7 +391,7 @@ function App() {
               </div>
               <div className="min-w-0">
                 <p className="text-xs font-bold text-white truncate">{user.name}</p>
-                <p className="text-[10px] text-slate-400 truncate">{user.isDemo ? 'Demo Student' : user.email}</p>
+                <p className="text-[10px] text-slate-400 truncate">{user.isDemo ? 'Demo Mode' : user.email}</p>
               </div>
             </div>
             <button
@@ -343,13 +415,17 @@ function App() {
               </div>
               <div>
                 <span className="font-display text-sm font-extrabold text-white">Spendwise</span>
-                {user.isDemo && <span className="ml-2 text-[9px] font-bold uppercase tracking-wider text-cyan-400 border border-cyan-400/30 rounded px-1.5 py-0.5">Demo</span>}
+                {user.isDemo && (
+                  <span className="ml-2 text-[9px] font-bold uppercase tracking-wider text-cyan-400 border border-cyan-400/30 rounded px-1.5 py-0.5">
+                    Demo
+                  </span>
+                )}
               </div>
             </div>
 
             <div className="hidden lg:block">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{monthLabel}</p>
-              <p className="mt-1 font-display text-lg font-bold text-white">Welcome back, {user.name.split(' ')[0]}</p>
+              <p className="mt-1 font-display text-lg font-bold text-white">Welcome, {user.name.split(' ')[0]}</p>
             </div>
 
             <div className="flex items-center gap-2">
@@ -390,7 +466,7 @@ function App() {
           {loading ? (
             <div className="flex min-h-[50vh] flex-col items-center justify-center text-slate-500">
               <Loader2 className="animate-spin text-cyan-400" size={28} />
-              <p className="mt-3 text-sm">Preparing your money cockpit…</p>
+              <p className="mt-3 text-sm">Loading your money data…</p>
             </div>
           ) : (
             <>
@@ -409,6 +485,9 @@ function App() {
                   onSeeHistory={() => setView('history')}
                   onEditBudget={() => setShowBudget(true)}
                   onDelete={deleteTransaction}
+                  onPopulateSample={handlePopulateSample}
+                  onResetToZero={handleResetToZero}
+                  seedingLoading={seedingLoading}
                 />
               )}
 
@@ -432,7 +511,10 @@ function App() {
                       ))}
                     </div>
                   ) : (
-                    <EmptyState title="No signals yet" text="Log a few expenses and your AI coach will start spotting patterns." />
+                    <EmptyState
+                      title="No signals yet"
+                      text="Log a few expenses above and your AI coach will start spotting patterns and giving actionable tips."
+                    />
                   )}
                 </section>
               )}
@@ -484,7 +566,7 @@ function App() {
                   ) : (
                     <EmptyState
                       title="Give your money somewhere to go"
-                      text="Create a goal for something meaningful, then update it as you save."
+                      text="Create a goal for something meaningful (like a new laptop or trip), then track your progress as you save."
                       action={
                         <button onClick={() => setEditingGoal(null)} className="rounded-xl bg-lime-300 px-4 py-2.5 text-xs font-bold text-slate-950">
                           Create your first goal
@@ -671,6 +753,9 @@ function Overview({
   onSeeHistory,
   onEditBudget,
   onDelete,
+  onPopulateSample,
+  onResetToZero,
+  seedingLoading,
 }: {
   summary: ReturnType<typeof summarize>;
   change: number | null;
@@ -685,6 +770,9 @@ function Overview({
   onSeeHistory: () => void;
   onEditBudget: () => void;
   onDelete: (id: string) => Promise<void>;
+  onPopulateSample: () => Promise<void>;
+  onResetToZero: () => Promise<void>;
+  seedingLoading: boolean;
 }) {
   return (
     <section className="animate-rise">
@@ -753,13 +841,17 @@ function Overview({
           <div className="mt-2 flex justify-center">
             <DonutChart data={donutData} total={summary.total} />
           </div>
-          {donutData.slice(0, 3).map((item) => (
-            <div key={item.label} className="mb-2 flex items-center gap-2 text-xs">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
-              <span className="flex-1 truncate text-slate-500">{item.label}</span>
-              <span className="font-bold text-slate-300">{formatCurrency(item.value)}</span>
-            </div>
-          ))}
+          {donutData.length > 0 ? (
+            donutData.slice(0, 3).map((item) => (
+              <div key={item.label} className="mb-2 flex items-center gap-2 text-xs">
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: item.color }} />
+                <span className="flex-1 truncate text-slate-500">{item.label}</span>
+                <span className="font-bold text-slate-300">{formatCurrency(item.value)}</span>
+              </div>
+            ))
+          ) : (
+            <p className="text-center text-xs text-slate-500 mt-2">No category spends logged yet</p>
+          )}
         </div>
       </div>
 
@@ -805,21 +897,48 @@ function Overview({
         <SpendingHeatmap transactions={transactions} />
       </div>
 
-      {/* Recent transactions */}
+      {/* Recent transactions or starter banner */}
       <div className="mt-4 rounded-3xl border border-slate-800 bg-[#0b1a2c] p-5 sm:p-6">
         <div className="mb-3 flex items-center justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Latest activity</p>
             <h3 className="mt-1 text-sm font-bold text-white">Recent transactions</h3>
           </div>
-          <button onClick={onSeeHistory} className="flex items-center gap-1 text-xs font-bold text-cyan-300 hover:text-cyan-200">
-            View full ledger <ChevronRight size={14} />
-          </button>
+          {transactions.length > 0 && (
+            <button onClick={onSeeHistory} className="flex items-center gap-1 text-xs font-bold text-cyan-300 hover:text-cyan-200">
+              View full ledger <ChevronRight size={14} />
+            </button>
+          )}
         </div>
         {transactions.length ? (
           <TransactionList transactions={transactions.slice(0, 5)} onDelete={onDelete} />
         ) : (
-          <EmptyState title="Your ledger is quiet" text="Log an expense to see your spending story take shape." />
+          <div className="rounded-2xl border border-dashed border-slate-800 p-8 text-center">
+            <Sparkles size={28} className="mx-auto text-cyan-400 mb-3" />
+            <h4 className="text-base font-bold text-white">Fresh Start — ₹0 Spent</h4>
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+              Your account starts completely clean with zero expenses. Use the AI Quick Log bar above (e.g. "Canteen lunch 120") to record your first spend.
+            </p>
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <button
+                onClick={onPopulateSample}
+                disabled={seedingLoading}
+                className="flex items-center gap-1.5 rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-4 py-2 text-xs font-bold text-cyan-300 hover:bg-cyan-400/20 transition-all disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={seedingLoading ? 'animate-spin' : ''} />
+                Load Sample Data
+              </button>
+              {transactions.length > 0 && (
+                <button
+                  onClick={onResetToZero}
+                  disabled={seedingLoading}
+                  className="rounded-xl border border-slate-700 px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-all disabled:opacity-50"
+                >
+                  Clear to Zero
+                </button>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </section>

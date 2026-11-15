@@ -1,4 +1,4 @@
-import { CATEGORIES } from '@/lib/categories';
+import { getCategory } from '@/lib/categories';
 import { formatCurrency } from '@/lib/format';
 import type { Budget } from '@/lib/types';
 import { categoryTotals } from '@/lib/insights';
@@ -18,7 +18,7 @@ export function BudgetProgress({ budgets, transactions, monthKey }: BudgetProgre
     return (
       <div className="rounded-2xl border border-dashed border-slate-700 p-6 text-center">
         <p className="text-sm font-medium text-slate-400">No budgets set yet.</p>
-        <p className="text-xs text-slate-500 mt-1">Tap “Budgets” to set monthly limits and we'll track them here.</p>
+        <p className="text-xs text-slate-500 mt-1">Tap “Budget rules” to set monthly limits and we'll track them here.</p>
       </div>
     );
   }
@@ -26,7 +26,7 @@ export function BudgetProgress({ budgets, transactions, monthKey }: BudgetProgre
   return (
     <div className="space-y-4">
       {budgets.map((b) => {
-        const cat = CATEGORIES.find((c) => c.name === b.category)!;
+        const cat = getCategory(b.category);
         const spent = totalMap.get(b.category) ?? 0;
         const pct = b.monthly_limit > 0 ? (spent / b.monthly_limit) * 100 : 0;
         const over = pct >= 100;

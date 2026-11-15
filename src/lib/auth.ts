@@ -75,6 +75,19 @@ export async function signUpWithEmail(email: string, password: string, name: str
   });
   if (error) throw error;
   if (!data.user) throw new Error('Sign up failed.');
+
+  // If session was not immediately returned, sign in directly
+  if (!data.session) {
+    const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({ email, password });
+    if (loginError) throw loginError;
+    return {
+      id: loginData.user.id,
+      email: loginData.user.email ?? email,
+      name: loginData.user.user_metadata?.name || name || email.split('@')[0],
+      isDemo: false,
+    };
+  }
+
   return {
     id: data.user.id,
     email: data.user.email ?? email,
