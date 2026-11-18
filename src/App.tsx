@@ -36,6 +36,8 @@ import { currentMonthKey, formatCurrency, formatMonth } from '@/lib/format';
 import { categoryTotals, generateInsights, summarize, weeklyTrend } from '@/lib/insights';
 import { calculateHealthScore } from '@/lib/health';
 import { CATEGORIES, getCategory } from '@/lib/categories';
+import { AiChatbot } from '@/components/AiChatbot';
+import type { FinancialContext } from '@/lib/gemini';
 import { BarChart } from '@/components/BarChart';
 import { BudgetModal } from '@/components/BudgetModal';
 import { BudgetProgress } from '@/components/BudgetProgress';
@@ -82,6 +84,7 @@ function App() {
   const [showSetBudgetModal, setShowSetBudgetModal] = useState(false);
   const [hasPromptedBudget, setHasPromptedBudget] = useState(false);
   const [editingGoal, setEditingGoal] = useState<SavingsGoal | null | undefined>(undefined);
+  const [isAiCoachOpen, setIsAiCoachOpen] = useState(false);
 
   // Auto-prompt to set monthly budget if not yet configured
   useEffect(() => {
@@ -350,6 +353,24 @@ function App() {
   const totalBudget = budgets.reduce((sum, budget) => sum + budget.monthly_limit, 0);
   const totalSaved = goals.reduce((sum, goal) => sum + goal.saved_amount, 0);
 
+  const financialContext: FinancialContext = useMemo(() => {
+    const [year, month] = monthKey.split('-').map(Number);
+    const totalDays = new Date(year, month, 0).getDate();
+    const currentDay = new Date().getDate();
+    const daysLeft = Math.max(1, totalDays - currentDay + 1);
+    const remaining = monthlyBudget ? monthlyBudget.total_budget - summary.total : 0;
+    return {
+      monthlyBudget,
+      totalSpent: summary.total,
+      remainingBudget: remaining,
+      daysLeftInMonth: daysLeft,
+      safeDailyPace: remaining > 0 ? remaining / daysLeft : 0,
+      transactions,
+      budgets,
+      goals,
+    };
+  }, [monthlyBudget, summary.total, monthKey, transactions, budgets, goals]);
+
   const change = useMemo(() => {
     const date = new Date();
     const previous = new Date(date.getFullYear(), date.getMonth() - 1, 1);
@@ -593,6 +614,7 @@ function App() {
             onAddTransaction={addTransaction}
             hasMonthlyBudget={Boolean(monthlyBudget)}
             onRequireBudget={() => setShowSetBudgetModal(true)}
+            onOpenAiCoach={() => setIsAiCoachOpen(true)}
           />
 
           {/* Master Monthly Budget & Remaining Balance Deduction Card */}
@@ -643,6 +665,14 @@ function App() {
                     title="AI signals"
                     detail="Small observations that make your next money decision easier."
                     icon={Bot}
+                    action={
+                      <button
+                        onClick={() => setIsAiCoachOpen(true)}
+                        className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-lime-300 px-4 py-2.5 text-xs font-extrabold text-slate-950 hover:opacity-95 shadow-md shadow-cyan-400/20 transition-all"
+                      >
+                        <Bot size={15} /> Ask Spendwise AI Coach
+                      </button>
+                    }
                   />
                   <div className="mb-6 grid gap-4 md:grid-cols-3">
                     <MetricCard label="Health score" value={`${score}/100`} detail="Based on your current habits" accent="cyan" />
@@ -851,6 +881,18 @@ function App() {
         />
       )}
       {editingGoal !== undefined && <GoalModal goal={editingGoal} onSave={saveGoal} onClose={() => setEditingGoal(undefined)} />}
+
+      {/* Spendwise AI Financial Coach & Vision Receipt Scanner */}
+      {user && (
+        <AiChatbot
+          financialContext={financialContext}
+          onAddTransaction={addTransaction}
+          hasMonthlyBudget={Boolean(monthlyBudget)}
+          onRequireBudget={() => setShowSetBudgetModal(true)}
+          isOpen={isAiCoachOpen}
+          onToggle={(open) => setIsAiCoachOpen(open)}
+        />
+      )}
     </div>
   );
 }

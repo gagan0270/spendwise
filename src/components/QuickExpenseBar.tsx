@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Bot, Check, CornerDownLeft, Loader2, Lock, Sparkles } from 'lucide-react';
+import { Bot, Camera, Check, CornerDownLeft, Loader2, Lock, Sparkles } from 'lucide-react';
 import { parseNaturalLanguageExpense } from '@/lib/nlpParser';
 import type { NewTransaction } from '@/lib/types';
 import { formatCurrency } from '@/lib/format';
@@ -8,9 +8,15 @@ interface QuickExpenseBarProps {
   onAddTransaction: (entry: NewTransaction) => Promise<void>;
   hasMonthlyBudget: boolean;
   onRequireBudget: () => void;
+  onOpenAiCoach?: () => void;
 }
 
-export function QuickExpenseBar({ onAddTransaction, hasMonthlyBudget, onRequireBudget }: QuickExpenseBarProps) {
+export function QuickExpenseBar({
+  onAddTransaction,
+  hasMonthlyBudget,
+  onRequireBudget,
+  onOpenAiCoach,
+}: QuickExpenseBarProps) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [lastAdded, setLastAdded] = useState<string | null>(null);
@@ -87,29 +93,43 @@ export function QuickExpenseBar({ onAddTransaction, hasMonthlyBudget, onRequireB
           </div>
         </div>
 
-        <button
-          type="submit"
-          disabled={submitting}
-          className={`w-full sm:w-auto flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-extrabold transition-all active:scale-95 shadow-md shrink-0 ${
-            hasMonthlyBudget
-              ? 'bg-cyan-300 text-slate-950 hover:bg-cyan-200 shadow-cyan-300/10'
-              : 'bg-amber-300 text-slate-950 hover:bg-amber-200 shadow-amber-300/10'
-          }`}
-        >
-          {submitting ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : hasMonthlyBudget ? (
-            <>
-              <Sparkles size={14} />
-              <span>Quick Log</span>
-            </>
-          ) : (
-            <>
-              <Lock size={14} />
-              <span>Set Budget First</span>
-            </>
+        <div className="flex w-full sm:w-auto items-center gap-2 shrink-0">
+          <button
+            type="submit"
+            disabled={submitting}
+            className={`flex-1 sm:flex-initial flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-extrabold transition-all active:scale-95 shadow-md shrink-0 ${
+              hasMonthlyBudget
+                ? 'bg-cyan-300 text-slate-950 hover:bg-cyan-200 shadow-cyan-300/10'
+                : 'bg-amber-300 text-slate-950 hover:bg-amber-200 shadow-amber-300/10'
+            }`}
+          >
+            {submitting ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : hasMonthlyBudget ? (
+              <>
+                <Sparkles size={14} />
+                <span>Quick Log</span>
+              </>
+            ) : (
+              <>
+                <Lock size={14} />
+                <span>Set Budget First</span>
+              </>
+            )}
+          </button>
+
+          {onOpenAiCoach && (
+            <button
+              type="button"
+              onClick={onOpenAiCoach}
+              title="Upload UPI screenshot or ask Spendwise AI Coach"
+              className="flex items-center justify-center gap-1.5 rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-3.5 py-2.5 text-xs font-bold text-cyan-300 hover:bg-cyan-400/20 hover:border-cyan-300 transition-all shrink-0 active:scale-95 shadow-sm"
+            >
+              <Camera size={14} />
+              <span className="hidden sm:inline">Scan Receipt / AI</span>
+            </button>
           )}
-        </button>
+        </div>
       </form>
 
       {lastAdded && (
